@@ -25,10 +25,10 @@ Show how to use this framework with:
 - CrewAI
 - Other agents
 
-Template: Create `examples/integrations/<framework>.md`
+Add the example under `examples/` and link it from the README.
 
 ### 3. Improve Documentation
-- Translate README, PLAN to other languages
+- Translate README to other languages
 - Clarify confusing sections
 - Add diagrams or examples
 
