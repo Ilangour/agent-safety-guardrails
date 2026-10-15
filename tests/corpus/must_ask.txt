@@ -1,0 +1,5 @@
+# legal but irreversible: human confirmation via Claude Code's native prompt
+terraform destroy -auto-approve
+terraform apply
+lxc delete preview
+lxc restore preview pre-agent-1

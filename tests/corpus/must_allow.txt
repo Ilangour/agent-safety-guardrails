@@ -1,0 +1,11 @@
+ls -la
+ls -la /Volumes/HDD6/data
+docker ps
+docker volume ls
+docker compose ps
+terraform plan
+lxc list
+psql -c "select 1"
+curl -s http://localhost:8080/health
+git push --force-with-lease
+git status

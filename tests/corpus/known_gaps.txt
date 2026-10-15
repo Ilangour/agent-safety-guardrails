@@ -1,0 +1,5 @@
+# Still allowed. Each line is a candidate issue, not a hidden failure.
+# cc-safety-net strict allows recursive rm of relative paths inside cwd by design
+# (CC_SAFETY_NET_LEVEL=paranoid denies them; the overlay only matches "rm -rf"/"rm -f").
+rm -r -f x
+python -c 'import shutil;shutil.rmtree("x")'

@@ -1,0 +1,6 @@
+# Harmless commands still blocked by the substring overlay (rules/destructive-patterns.json).
+# cc-safety-net allows all of them; the overlay matches quoted text and substrings.
+grep -r DROP src/
+cat DROPBOX.md
+echo "rm -rf"
+git commit -m "docs: mention docker rm"
