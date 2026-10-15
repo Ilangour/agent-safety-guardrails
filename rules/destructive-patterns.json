@@ -43,9 +43,16 @@
       "severity": "HIGH",
       "patterns": [
         "docker rm",
+        "docker rmi",
         "docker compose down",
+        "docker-compose down",
         "docker stop",
-        "docker kill"
+        "docker kill",
+        "docker volume rm",
+        "docker volume prune",
+        "docker system prune",
+        "colima delete",
+        "colima stop"
       ],
       "reason": "Stopping containers interrupts services. Data may be corrupted.",
       "approved_actions": [
@@ -74,7 +81,6 @@
       "name": "Live-Archive-Protection",
       "severity": "CRITICAL",
       "patterns": [
-        "/Volumes/HDD6/02-Chaude/immich/",
         "rm -rf /Volumes/HDD6",
         "mv /Volumes/HDD6/02-Chaude/immich",
         "DROP SCHEMA immich",

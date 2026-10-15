@@ -1,262 +1,204 @@
 # Agent Safety Guardrails
 
-**Prevent LLM agents from launching destructive actions without explicit human approval.**
+Deterministic guardrails for Claude Code: destructive commands are refused by the runtime, not by the model's good intentions.
 
-A production-ready framework for securing autonomous agents against accidental (or malicious) destructive operations.
+## Principle
 
-## Problem
+A rule written in `CLAUDE.md` is text the model can ignore. The controls in this repo are executed by Claude Code itself:
 
-LLM agents with tool access can launch dangerous commands:
-- `DROP SCHEMA` on production databases
-- `rm -rf /critical/data/`
-- `docker compose down` on running services
-- Without asking for confirmation
+| Layer | Mechanism | Who enforces it | Weakness |
+|---|---|---|---|
+| 1. Deny rules | `permissions.deny` in `~/.claude/settings.json` | Claude Code, before the tool runs | Bash rules match the command text: `sh -c '...'`, `/bin/rm`, or a different subcommand form are not matched |
+| 2. PreToolUse hook | Script receives the command as JSON on stdin, exits `2` to block | Claude Code | Only as good as the script (see Status) |
+| 3. `CLAUDE.md` | Instructions | The model | Not a control. Documentation only |
 
-**Root cause:** Text-based safety rules ("don't do X") are not enforced. Agents bypass them via objective reformulation, autonomy mindset, or complexity.
+Deny rules are a guardrail, not a security boundary. Real protection for data comes from backups, from not mounting the Docker socket into containers, and from keeping destructive operations out of the agent's reach.
 
-**This repo:** Multi-layer defense architecture proven in research (SafeMCP, ToolSafe, Constitutional AI).
+### What a Bash deny rule matches
 
-## Solution Architecture
+Claude Code matches the command text it writes, after splitting compound commands (`&&`, `;`, `|`, ...) and stripping a fixed set of wrappers (`timeout`, `nice`, `nohup`, `xargs`, ...). Per the Claude Code permissions documentation:
 
-```
-┌─────────────────────────────────────────┐
-│   3-Phase Implementation                │
-├─────────────────────────────────────────┤
-│ Phase 1: Memory + Whitelist (4h)        │
-│  └─ Memory-augmented decision-making    │
-│  └─ Tool whitelist with confirmation    │
-│                                         │
-│ Phase 2: Deterministic Blocker (4h)     │
-│  └─ Pre-execution hook intercepts       │
-│  └─ Pattern matching vs destructive DB  │
-│                                         │
-│ Phase 3: Validation + Sandbox (4h)      │
-│  └─ Test suite ensures blocking works   │
-│  └─ Container sandbox (optional)        │
-└─────────────────────────────────────────┘
-```
+| Rule | Matched | Not matched |
+|---|---|---|
+| `Bash(docker rm:*)` | `docker rm web` | `/usr/local/bin/docker rm web`, `sh -c 'docker rm web'` |
+| `Bash(docker rm:*)` | `cd /tmp && docker rm web` (split, then matched) | |
+| `Bash(docker rm:*)` | `FOO=bar docker rm web` (deny ignores leading assignments) | |
+| `Bash(docker rm:*)` | `docker exec immich_server docker rm web` (`docker exec` is not a stripped wrapper, so the inner command is not checked) | |
 
-## Quick Start
+Blocking the shell-wrapper and full-path forms is the job of the hook (step 4).
 
-```bash
-# Clone this repo
-git clone https://github.com/logo-solutions/agent-safety-guardrails
-cd agent-safety-guardrails
+## Requirements
 
-# Read the complete plan
-cat PLAN.md
+- Claude Code (current version, `claude --version`)
+- `jq` (`brew install jq`)
+- macOS or Linux, `bash`
 
-# Execute Phase 1 (Memory + Whitelist)
-./scripts/01-setup-safety-dirs.sh
-./scripts/02-init-destructive-patterns.sh
-./scripts/03-init-memory-requirements.sh
-./scripts/04-configure-whitelist.sh
+## Installation
 
-# Execute Phase 2 (Blocker)
-./scripts/05-deploy-blocker.sh
-./scripts/06-integrate-hook.sh
-
-# Execute Phase 3 (Tests)
-./scripts/07-run-tests.sh
-./scripts/08-review-incidents.sh
-```
-
-## Key Concepts
-
-### 1. Memory-Driven Decision Making
-Agents MUST consult safety memory before every destructive action. Consultation is forced via context window, not optional.
-
-```json
-{
-  "memory-requirement": "Before DROP, DELETE, rm -rf → READ destructive-patterns.json",
-  "enforcement": "Mandatory context injection"
-}
-```
-
-### 2. Destructive Patterns Whitelist
-Define patterns that trigger confirmation. Not blacklist (too easy to bypass), whitelist (explicit approval).
-
-```json
-{
-  "patterns": [
-    "DROP SCHEMA",
-    "rm -rf /Volumes/HDD6",
-    "docker compose down"
-  ],
-  "severity": "CRITICAL",
-  "action": "Block + require explicit confirmation"
-}
-```
-
-### 3. Pre-Execution Hook
-Before any bash command runs, scan for patterns. If match → require human confirmation.
+### 1. Clone the repository
 
 ```bash
-if command matches destructive-patterns.json:
-  → BLOCK
-  → Require: "CONFIRM DESTRUCTIVE"
-  → User must type exact string
-  → Log incident
-else:
-  → ALLOW
+mkdir -p ~/Projects && cd ~/Projects
+git clone https://github.com/loicgo29/agent-safety-guardrails
+chmod +x agent-safety-guardrails/hooks/pre-execution-guard.sh
 ```
 
-## Files & Structure
+Keep the clone outside `~/.claude`. Claude Code reads only the settings file from there.
 
-```
-agent-safety-guardrails/
-├── README.md (this file)
-├── PLAN.md (complete 3-phase implementation plan)
-├── LICENSE (MIT)
-├── CONTRIBUTING.md (how to contribute)
-│
-├── scripts/
-│   ├── 01-setup-safety-dirs.sh
-│   ├── 02-init-destructive-patterns.sh
-│   ├── 03-init-memory-requirements.sh
-│   ├── 04-configure-whitelist.sh
-│   ├── 05-deploy-blocker.sh
-│   ├── 06-integrate-hook.sh
-│   ├── 07-run-tests.sh
-│   ├── 08-review-incidents.sh
-│   └── 09-build-sandbox.sh
-│
-├── rules/
-│   ├── destructive-patterns.json (patterns to block)
-│   └── memory-requirements.md (what agent must check)
-│
-├── hooks/
-│   └── pre-execution-guard.sh (the blocker)
-│
-├── tests/
-│   └── agent-safety-tests.sh
-│
-└── examples/
-    ├── settings.json.example
-    ├── destructive-patterns.json.example
-    └── incidents-log.jsonl.example
-```
+### 2. Add the deny rules (works without the hook)
 
-## Integration Points
+Open `~/.claude/settings.json` and add these entries to the existing `permissions.deny` array. Do not replace the array: keep the entries you already have.
 
-### For Claude Code
-Update `~/.claude/settings.json`:
 ```json
 {
-  "hooks": {
-    "before-bash": {
-      "script": "/path/to/pre-execution-guard.sh",
-      "block-on-failure": true
-    }
+  "permissions": {
+    "deny": [
+      "Bash(docker volume rm:*)",
+      "Bash(docker volume prune:*)",
+      "Bash(docker system prune:*)",
+      "Bash(docker compose down:*)",
+      "Bash(docker-compose down:*)",
+      "Bash(docker rm:*)",
+      "Bash(docker rmi:*)",
+      "Bash(docker stop:*)",
+      "Bash(docker kill:*)",
+      "Bash(colima delete:*)",
+      "Bash(colima stop:*)"
+    ]
   }
 }
 ```
 
-### For Other Agents (LangChain, AutoGPT, etc.)
-Wrap your tool invocation:
-```python
-from agent_safety import PreExecutionGuard
+The `:*` suffix matches the command and any arguments after it. `Bash(docker volume rm:*)` blocks `docker volume rm data` and `docker volume rm -f data`.
 
-guard = PreExecutionGuard(
-  patterns_file="./rules/destructive-patterns.json",
-  require_confirmation=True
-)
+**Path rules in user settings.** A `/path` pattern in `~/.claude/settings.json` is relative to `~/.claude/`, not to the filesystem root. For an absolute path, use two slashes:
 
-# Before tool execution:
-if not guard.check(command):
-    raise BlockedActionError(f"Destructive pattern detected: {command}")
+```json
+"Read(//Volumes/HDD6/01-Froide/**)"
 ```
 
-## Research Foundation
+Not `Read(/Volumes/HDD6/01-Froide/**)`, which would match `~/.claude/Volumes/...`.
 
-This framework is based on peer-reviewed research:
+### 3. Verify the deny rules
 
-- **SafeMCP** — Proactive power regulation (arxiv:2606.01991)
-- **ToolSafe** — Enhanced tool invocation safety (arxiv:2601.10156)
-- **Constitutional AI** — Hard constraints via training (Anthropic)
-- **Memory-Driven Agents** — Forced consultation (arxiv:2509.26340)
-- **Deterministic Pre-Action Authorization** (arxiv:2603.20953)
+Start a new Claude Code session and ask it to run:
 
-See [PLAN.md](PLAN.md) for full references.
+```text
+docker volume rm test-volume
+```
 
-## Why This Works
+Expected: the command is refused by the permission system and never executed. A harmless command such as `docker ps` must still run.
 
-| Approach | Limit | This Framework |
-|----------|-------|---|
-| Text prompts ("don't do X") | Bypassable via reformulation | ✅ Deterministic blocker |
-| JSON blacklist | Incomplete, model finds workarounds | ✅ Whitelist + confirmation |
-| Passive memory | Agent can ignore | ✅ Forced memory consultation |
-| Single gate | One failure = breach | ✅ Multi-layer defense |
+### 4. Add the PreToolUse hook
 
-## Incident Logging
-
-Every blocked action is logged:
+Add a `PreToolUse` entry next to the existing `hooks` block in `~/.claude/settings.json`. Use an absolute path. If the file already has other hook events (such as `SessionStart`), keep them.
 
 ```json
 {
-  "timestamp": "2026-10-15T21:45:32+02:00",
-  "command": "DROP SCHEMA public CASCADE",
-  "status": "BLOCKED",
-  "pattern_matched": "Database-Operations",
-  "severity": "CRITICAL"
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/yourname/Projects/agent-safety-guardrails/hooks/pre-execution-guard.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
 }
 ```
 
-Review incidents and update patterns accordingly.
+Hook contract:
 
-## Success Criteria
+- Input: JSON on stdin. The command is in `tool_input.command`.
+- Exit `0`: allowed. Exit `2`: blocked, and the message on stderr is shown to the model.
+- The hook must never prompt for input. A prompt cannot be answered inside a hook.
 
-After Phase 3:
-- ✅ No agent can launch destructive commands unilaterally
-- ✅ All dangerous operations require explicit human confirmation
-- ✅ Every action is logged with full audit trail
-- ✅ Patterns are updateable without redeploying agent
-- ✅ Zero-trust model: verify before every execution
+### 5. Test the hook
+
+```bash
+echo '{"tool_name":"Bash","tool_input":{"command":"docker volume rm test"}}' \
+  | ~/Projects/agent-safety-guardrails/hooks/pre-execution-guard.sh
+echo "exit=$?"   # expected: exit=2
+
+echo '{"tool_name":"Bash","tool_input":{"command":"docker volume ls"}}' \
+  | ~/Projects/agent-safety-guardrails/hooks/pre-execution-guard.sh
+echo "exit=$?"   # expected: exit=0
+```
+
+## Policy: where each rule lives
+
+- **`~/.claude/settings.json` → `permissions.deny`**: command prefixes refused before execution. Edit here to add or remove a rule.
+- **`rules/destructive-patterns.json`**: pattern groups with severity and reason, read by the hook. Edit in the repo, then `git pull` on other machines.
+- **`incidents/log.jsonl`**: one line per command blocked by the hook. Allowed commands are not logged. Review it to tune the patterns.
+
+Patterns are plain text, matched as substrings of the whole command, case-insensitively. Keep them specific: a bare word such as `DROP` also matches `dropdown`, and a pattern also matches inside quoted text (`echo "docker rm"` is blocked).
+
+## Optional: container auto-heal
+
+Docker healthchecks only report state. `willfarrell/autoheal` restarts containers whose healthcheck is `unhealthy`. It does not restart stopped containers.
+
+```yaml
+services:
+  autoheal:
+    image: willfarrell/autoheal:<pinned-version>
+    restart: always
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: 30
+      AUTOHEAL_START_PERIOD: 120
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+```
+
+Then label only the services that may be restarted:
+
+```yaml
+  app:
+    labels:
+      - autoheal=true
+```
+
+Warnings:
+
+- The Docker socket gives the autoheal container control over every container on the host. Treat it as a privileged component.
+- A restart is a stop. Do not label services where an unplanned restart is unacceptable, such as a database during an import or a backup.
+- Pin the image version. Check the socket path on your Docker runtime (Colima and Docker Desktop differ).
+
+## Status
+
+- **Deny rules**: syntax checked against the Claude Code permissions documentation. Applied in the author's `~/.claude/settings.json`. Not yet tested end to end in a live session.
+- **Hook**: rewritten to the contract above (reads JSON on stdin, exits `2` to block, never prompts). Tested with simulated JSON inputs (9 cases: blocked and allowed commands, invalid JSON, empty command). Not yet tested inside a live Claude Code session.
+- **Hook limits**: it matches the pattern list in `rules/destructive-patterns.json`, not the intent of the command. `docker compose -f file.yml down` is not matched by the hook's `docker compose down` pattern, nor by the deny rule `Bash(docker compose down:*)`, which matches the prefix only. Add a pattern for `down` with a file flag if that form is used. Commands that build a destructive call indirectly (variables, scripts, `eval`) are not detected.
+- **Hook dependency**: requires `jq`. Without it, the hook blocks every Bash call (fail-closed).
+- **`CLAUDE_CODE_INTEGRATION.md`**: outdated (it describes a `before-bash` key that Claude Code does not read, and a confirmation prompt instead of a block). Superseded by this README.
+- **`scripts/`**: empty. `PLAN.md` is the historical design, not the install procedure.
+
+## Files
+
+```
+agent-safety-guardrails/
+├── README.md
+├── hooks/pre-execution-guard.sh     PreToolUse hook (step 4)
+├── rules/destructive-patterns.json  pattern groups read by the hook
+├── rules/memory-requirements.md     rules for the agent
+├── incidents/log.jsonl              audit trail
+├── examples/                        example settings and patterns
+└── tests/agent-safety-tests.sh
+```
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-We welcome:
-- Additional destructive patterns (share your incidents)
-- Integration examples (Claude, LangChain, AutoGPT, etc.)
-- Hardening feedback (security researchers)
-- Translations of documentation
+See [CONTRIBUTING.md](CONTRIBUTING.md). Useful contributions: patterns from real incidents, and reports of bypasses (with a reproduction, not an exploit against third parties).
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
-## Security Disclaimer
+## Disclaimer
 
-This framework is a **defense-in-depth approach**, not a guarantee. Security is a practice, not a product.
-
-- Test thoroughly before production use
-- Keep destructive-patterns.json updated
-- Monitor incident logs regularly
-- Never skip the multi-layer checks
-
-## Maintainers
-
-Created by [logo-solutions](https://github.com/logo-solutions) as a result of incident analysis and research into LLM agent safety.
-
-## Citation
-
-If you use this framework, cite as:
-
-```bibtex
-@software{agent-safety-guardrails-2026,
-  title={Agent Safety Guardrails: Multi-Layer Defense for LLM Agents},
-  author={logo-solutions},
-  year={2026},
-  url={https://github.com/logo-solutions/agent-safety-guardrails}
-}
-```
-
----
-
-**Status:** Production-ready for Phase 1-2. Phase 3 (sandbox) is optional/advanced.
-
-**Last Updated:** 2026-10-15
-
-**Questions?** Open an issue or see [CONTRIBUTING.md](CONTRIBUTING.md).
+This is defense in depth, not a guarantee. Test it on your own setup and keep backups.

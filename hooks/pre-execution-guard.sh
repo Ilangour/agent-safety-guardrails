@@ -1,82 +1,39 @@
-#!/bin/bash
-# Pre-execution guard: blocks destructive patterns BEFORE execution
-set -e
+#!/usr/bin/env bash
+# PreToolUse hook (matcher: Bash). Reads the tool call as JSON on stdin.
+# Exit 0 = allow, exit 2 = block (stderr is shown to the model). Never prompts.
+set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DESTRUCTIVE_PATTERNS_FILE="${SCRIPT_DIR}/rules/destructive-patterns.json"
-INCIDENT_LOG="${SCRIPT_DIR}/incidents/log.jsonl"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PATTERNS_FILE="${ROOT}/rules/destructive-patterns.json"
+INCIDENT_LOG="${ROOT}/incidents/log.jsonl"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-detect_destructive_pattern() {
-  local command="$1"
-  
-  if [[ ! -f "$DESTRUCTIVE_PATTERNS_FILE" ]]; then
-    echo -e "${YELLOW}⚠️  Patterns file not found: $DESTRUCTIVE_PATTERNS_FILE${NC}"
-    return 0  # Allow if no patterns file
-  fi
-  
-  # Check each pattern
-  while IFS= read -r pattern; do
-    if [[ "$command" == *"$pattern"* ]]; then
-      return 1  # Block
-    fi
-  done < <(jq -r '.patterns[].patterns[]' "$DESTRUCTIVE_PATTERNS_FILE" 2>/dev/null || true)
-  
-  return 0  # Allow
+fail() {
+  echo "agent-safety-guardrails: $1" >&2
+  exit 2
 }
 
-require_confirmation() {
-  local action="$1"
-  local required_text="$2"
-  
-  echo ""
-  echo -e "${RED}⚠️  DESTRUCTIVE ACTION DETECTED${NC}"
-  echo "Action: $action"
-  echo ""
-  echo "To confirm, type: $required_text"
-  read -p "> " user_input
-  
-  if [[ "$user_input" != "$required_text" ]]; then
-    echo -e "${RED}❌ Confirmation failed. Action blocked.${NC}"
-    log_incident "$action" "CANCELLED"
-    return 1
-  fi
-  
-  return 0
-}
+command -v jq >/dev/null 2>&1 || fail "jq est requis (brew install jq)"
+[[ -f "$PATTERNS_FILE" ]] || fail "fichier de motifs introuvable: $PATTERNS_FILE"
 
-log_incident() {
-  local command="$1"
-  local status="$2"
-  
+input="$(cat)"
+jq -e . >/dev/null 2>&1 <<<"$input" || fail "entrée JSON invalide, appel bloqué par précaution"
+
+cmd="$(jq -r '.tool_input.command // empty' <<<"$input")"
+[[ -z "$cmd" ]] && exit 0
+
+log_block() {
   mkdir -p "$(dirname "$INCIDENT_LOG")"
-  echo "{\"timestamp\": \"$(date -Iseconds)\", \"command\": \"$command\", \"status\": \"$status\"}" >> "$INCIDENT_LOG"
+  jq -cn --arg ts "$(date -Iseconds)" --arg cmd "$cmd" --arg group "$1" \
+    '{timestamp: $ts, command: $cmd, status: "BLOCKED", pattern_matched: $group}' \
+    >> "$INCIDENT_LOG"
 }
 
-# MAIN
-COMMAND_TO_RUN="$1"
-
-if [[ -z "$COMMAND_TO_RUN" ]]; then
-  echo "Usage: $0 <command>"
-  exit 1
-fi
-
-# Check for destructive patterns
-if ! detect_destructive_pattern "$COMMAND_TO_RUN"; then
-  echo -e "${RED}BLOCKED: Destructive pattern detected${NC}"
-  log_incident "$COMMAND_TO_RUN" "BLOCKED"
-  
-  # Require confirmation
-  if ! require_confirmation "$COMMAND_TO_RUN" "CONFIRM DESTRUCTIVE"; then
-    exit 1
+shopt -s nocasematch
+while IFS=$'\t' read -r group pattern; do
+  if [[ "$cmd" == *"$pattern"* ]]; then
+    log_block "$group"
+    fail "bloqué [$group] motif « $pattern ». Demander une confirmation explicite à l'utilisateur."
   fi
-  
-  log_incident "$COMMAND_TO_RUN" "APPROVED"
-fi
+done < <(jq -r '.patterns[] | . as $g | $g.patterns[] | [$g.name, .] | @tsv' "$PATTERNS_FILE")
 
 exit 0
