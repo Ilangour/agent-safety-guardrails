@@ -175,7 +175,6 @@ Warnings:
 - **Hook**: rewritten to the contract above (reads JSON on stdin, exits `2` to block, never prompts). Tested with simulated JSON inputs (9 cases: blocked and allowed commands, invalid JSON, empty command). Not yet tested inside a live Claude Code session.
 - **Hook limits**: it matches the pattern list in `rules/destructive-patterns.json`, not the intent of the command. `docker compose -f file.yml down` is not matched by the hook's `docker compose down` pattern, nor by the deny rule `Bash(docker compose down:*)`, which matches the prefix only. Add a pattern for `down` with a file flag if that form is used. Commands that build a destructive call indirectly (variables, scripts, `eval`) are not detected.
 - **Hook dependency**: requires `jq`. Without it, the hook blocks every Bash call (fail-closed).
-- **`CLAUDE_CODE_INTEGRATION.md`**: outdated (it describes a `before-bash` key that Claude Code does not read, and a confirmation prompt instead of a block). Superseded by this README.
 - **`scripts/`**: empty. `PLAN.md` is the historical design, not the install procedure.
 
 ## Files
