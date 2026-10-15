@@ -11,10 +11,10 @@ A rule written in `CLAUDE.md` is text the model can ignore. The controls in this
 | Layer | Mechanism | Weakness |
 |---|---|---|
 | 1. Deny rules | `permissions.deny` in `~/.claude/settings.json` | Bash rules match the command text: `sh -c '...'` or `/bin/rm` are not matched |
-| 2. PreToolUse hook | Script reads the command as JSON on stdin, exits `2` to block | Substring matching: also blocks harmless text (see Hook) |
+| 2. PreToolUse hook | `hooks/guard.sh`: [cc-safety-net](https://github.com/kenryu42/cc-safety-net) (MIT, pinned, strict mode) parses the command, then `rules/destructive-patterns.json` is applied as a local overlay | The overlay is substring matching: also blocks harmless text (see Hook). The engine is static analysis, not a sandbox |
 | 3. `CLAUDE.md` | Instructions | Not a control |
 
-Deny rules and the hook are guardrails, not a security boundary. Real protection for data comes from backups, from not mounting the Docker socket into containers, and from keeping destructive operations out of the agent's reach.
+Deny rules and the hook are a seat belt against honest mistakes, not a security boundary: combine them with a sandbox and least privilege (read-only DB role, user outside the `docker` group, backups). Real protection for data comes from backups, from not mounting the Docker socket into containers, and from keeping destructive operations out of the agent's reach.
 
 ## Policy
 
@@ -44,7 +44,15 @@ Immich data in `02-Chaude` is never deleted or moved. Reads are allowed by decis
 
 ### Hook behaviour
 
-- A blocked call is appended to `incidents/log.jsonl`. Allowed calls are not logged. The file is local and gitignored.
+`hooks/guard.sh` stacks three layers; each one can only tighten the decision (`deny` > `ask` > `allow`):
+
+1. **cc-safety-net** (`npx -y cc-safety-net@2.6.12 hook --coding-cli`, `CC_SAFETY_NET_LEVEL=strict`): shell-aware parser. Catches `rm -r -f`, `/bin/rm`, `sudo rm`, `bash -c "rm …"`, `$(echo rm) -rf /`, `r''m -rf /`, `rm$IFS-rf$IFS/`, `base64 -d | sh`, `find / -delete`, `git push --force`, `git reset --hard`, `git clean -fd`; denies what it cannot parse. Set `CC_SAFETY_NET_LEVEL=paranoid` to also deny `rm -rf ./x` inside the project.
+2. **`hooks/pre-execution-guard.sh`** with `rules/destructive-patterns.json`, unchanged: Docker, Colima, database DDL, archive paths.
+3. **Ask overlay**: `terraform destroy|apply`, `lxc delete|restore` return `permissionDecision: "ask"`, which forces Claude Code's native prompt (also in auto mode).
+
+If `node`/`npx` is missing the engine cannot run: the hook then returns `ask` for any command containing a sensitive keyword (`rm`, `git push`, `drop`, `sudo`, `sh`, …) and still applies layer 2. It never allows silently.
+
+- Every decision is appended as one JSON line (built with `jq --arg`, not string concatenation) to `${XDG_STATE_HOME:-~/.local/state}/agent-safety-guardrails/decisions.jsonl`, override with `GUARD_LOG`. Layer 2 keeps writing blocked calls to `incidents/log.jsonl` (local, gitignored).
 - **False positives**: the match is a substring of the whole command, including quoted text and commit messages. On 2026-10-15 a commit message containing `docker rm` and `colima stop` was blocked.
 - **Workaround for text only**: write the message to a file with the Write tool and run `git commit -F <file>`. Do not use this to get around a real destructive command.
 
@@ -57,10 +65,10 @@ The deny rules, hook and disk rules live in `~/.claude/settings.json`, outside t
 ```bash
 mkdir -p ~/Projects && cd ~/Projects
 git clone https://github.com/loicgo29/agent-safety-guardrails
-chmod +x agent-safety-guardrails/hooks/pre-execution-guard.sh
+chmod +x agent-safety-guardrails/hooks/*.sh
 ```
 
-Keep the clone outside `~/.claude`.
+Keep the clone outside `~/.claude`. The hook needs `jq` and Node.js 18+ (`node`, `npx`): the first call downloads `cc-safety-net@2.6.12` into the npx cache (about 1 s afterwards). To avoid npx at runtime: `npm install -g cc-safety-net@2.6.12`.
 
 ### 2. Back up the settings
 
@@ -139,8 +147,9 @@ Add a `PreToolUse` entry next to the existing `hooks` block. Keep the other hook
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/agent-safety-guardrails/hooks/pre-execution-guard.sh",
-            "timeout": 5
+            "command": "/absolute/path/to/agent-safety-guardrails/hooks/guard.sh",
+            "timeout": 30,
+            "onFailure": "block"
           }
         ]
       }
@@ -152,8 +161,9 @@ Add a `PreToolUse` entry next to the existing `hooks` block. Keep the other hook
 Hook contract:
 
 - Input: JSON on stdin. The command is in `tool_input.command`.
-- Exit `0`: allowed. Exit `2`: blocked, and the message on stderr is shown to the model.
-- The hook never prompts.
+- Exit `0` with empty stdout: allowed. Exit `2`: blocked, and the message on stderr is shown to the model. Exit `0` with `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask",...}}`: Claude Code shows its native confirmation prompt (denied in `-p` mode, where nobody can answer).
+- The hook never reads a TTY.
+- `onFailure: "block"` (Claude Code 2.1.295+) blocks the call if the hook crashes, times out or prints invalid output; the default is to let the command run.
 - Requires `jq` (`brew install jq`). Without it, the hook blocks every Bash call.
 
 ### 6. Validate the JSON
@@ -165,10 +175,11 @@ jq . ~/.claude/settings.json >/dev/null && echo "JSON valide"
 ### 7. Test
 
 ```bash
-bash tests/agent-safety-tests.sh
+bash tests/agent-safety-tests.sh      # layer 2 alone, expected: 10 passed, 0 failed
+npx -y bats@1.13.0 tests/guard.bats   # full hook, expected: 9 tests, 0 failures, 2 skipped
 ```
 
-The suite runs against a copy of the hook and rules, so the incidents log is not touched. Expected: `10 passed, 0 failed`.
+Both suites run against a copy of the hooks and rules, so the incidents log is not touched. `tests/guard.bats` feeds each line of `tests/corpus/*.txt` as a real PreToolUse JSON: `must_block.txt`, `must_ask.txt`, `must_allow.txt`, plus `known_gaps.txt` (dangerous commands still allowed) and `false_positives.txt` (harmless commands still blocked by the overlay). The two last files are reported as skips, not hidden: move a line out of them when the behaviour changes. The same suites run in GitHub Actions on every push and pull request (`.github/workflows/test.yml`).
 
 Then start a new Claude Code session, since a session already open may not have the new settings. Check:
 
@@ -211,7 +222,7 @@ Label only the services that may be restarted:
 ## Status (2026-10-15)
 
 - **Deny rules and disk rules**: applied on the author's machine. Syntax checked against the Claude Code permissions documentation. Not yet verified in a live session.
-- **Hook**: rewritten to the contract above. `tests/agent-safety-tests.sh` passes 10/10. Not yet verified inside a live session.
+- **Hook**: `hooks/guard.sh` delegates to cc-safety-net 2.6.12 (strict) and keeps `pre-execution-guard.sh` as overlay. `tests/agent-safety-tests.sh` 10/10, `tests/guard.bats` 9/9. Verified in a live `claude -p` session on a throwaway folder: both `rm -rf` calls blocked, log written.
 - **Auto-heal**: not deployed.
 - **`CLAUDE_CODE_INTEGRATION.md`**: removed on 2026-10-15. This README replaces it.
 - **`examples/`**: rewritten on 2026-10-15 to the current format. Copy the values, do not use it as-is.
@@ -226,12 +237,14 @@ Label only the services that may be restarted:
 ```
 agent-safety-guardrails/
 ├── README.md                        this file (single source of truth)
-├── hooks/pre-execution-guard.sh     PreToolUse hook
-├── rules/destructive-patterns.json  pattern groups read by the hook
-├── incidents/log.jsonl              local log of blocked calls (gitignored)
+├── hooks/guard.sh                   PreToolUse hook: cc-safety-net + overlay + ask rules
+├── hooks/pre-execution-guard.sh     overlay (this repo's own patterns), also usable alone
+├── rules/destructive-patterns.json  pattern groups read by the overlay
+├── incidents/log.jsonl              local log of overlay blocks (gitignored)
 ├── examples/                        example settings
-├── tests/agent-safety-tests.sh      hook test suite
-└── scripts/                         empty
+├── tests/agent-safety-tests.sh      overlay test suite
+├── tests/guard.bats, tests/corpus/  full hook test suite (bats) and command corpora
+└── .github/workflows/test.yml       CI: both suites on push and pull request
 ```
 
 ## Contributing

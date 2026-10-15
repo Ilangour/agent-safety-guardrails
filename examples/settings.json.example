@@ -27,8 +27,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/agent-safety-guardrails/hooks/pre-execution-guard.sh",
-            "timeout": 5
+            "command": "/absolute/path/to/agent-safety-guardrails/hooks/guard.sh",
+            "timeout": 30,
+            "onFailure": "block"
           }
         ]
       }
