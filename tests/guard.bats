@@ -85,5 +85,5 @@ expect_allow() { guard "$1"; [[ $status -eq 0 && -z "$output" ]] || { echo "NOT 
 @test "decisions are logged as JSON lines, outside the repo" {
   guard 'git push --force'
   jq -e 'select(.decision=="deny" and .command=="git push --force" and .session=="test")' "$GUARD_LOG" >/dev/null
-  [[ ! -e "$ROOT/incidents/log.jsonl" || -z "$(grep -c toolu_test "$ROOT/incidents/log.jsonl")" ]]
+  ! grep -qs toolu_test "$ROOT/incidents/log.jsonl"
 }
