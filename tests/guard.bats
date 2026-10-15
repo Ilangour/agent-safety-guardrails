@@ -82,6 +82,13 @@ expect_allow() { guard "$1"; [[ $status -eq 0 && -z "$output" ]] || { echo "NOT 
   PATH="$BATS_TEST_TMPDIR/bin" expect_block 'docker volume rm data'   # overlay still active
 }
 
+@test "unreadable engine verdict: ask, never silent allow" {
+  mkdir -p "$BATS_TEST_TMPDIR/fake"
+  printf '#!/bin/sh\ncat >/dev/null; echo garbage\n' > "$BATS_TEST_TMPDIR/fake/cc-safety-net"
+  chmod +x "$BATS_TEST_TMPDIR/fake/cc-safety-net"
+  PATH="$BATS_TEST_TMPDIR/fake:$PATH" expect_ask 'ls -la'
+}
+
 @test "decisions are logged as JSON lines, outside the repo" {
   guard 'git push --force'
   jq -e 'select(.decision=="deny" and .command=="git push --force" and .session=="test")' "$GUARD_LOG" >/dev/null

@@ -31,8 +31,8 @@ else engine=(npx -y "cc-safety-net@${ENGINE_VERSION}"); fi
 
 decision=allow; reason=""
 if verdict="$(printf '%s' "$input" | "${engine[@]}" hook --coding-cli 2>/dev/null)"; then
-  decision="$(jq -r '.hookSpecificOutput.permissionDecision // "allow"' <<<"${verdict:-{\}}")"
-  reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason // ""' <<<"${verdict:-{\}}")"
+  decision="$(jq -r '.hookSpecificOutput.permissionDecision // "allow"' <<<"${verdict:-{\}}" 2>/dev/null)" || decision=ask
+  reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason // ""' <<<"${verdict:-{\}}" 2>/dev/null)" || reason="verdict du moteur illisible : confirmation humaine requise"
 elif grep -Eiq "$SENSITIVE" <<<"$cmd"; then
   decision=ask; reason="moteur cc-safety-net indisponible (node/npx manquant ?), mot-clé sensible : confirmation humaine requise"
 fi
