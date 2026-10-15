@@ -1,0 +1,14 @@
+{
+  "agent-whitelist": {
+    "enabled": true,
+    "version": "1.0",
+    "allowed-tools": ["read", "bash-safe", "curl-api", "sql-select"],
+    "blocked-tools": ["bash-unrestricted", "docker-full", "sql-destructive"]
+  },
+  "hooks": {
+    "before-bash": {
+      "script": "/path/to/agent-safety-guardrails/hooks/pre-execution-guard.sh",
+      "block-on-failure": true
+    }
+  }
+}

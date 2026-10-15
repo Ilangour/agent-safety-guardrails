@@ -1,0 +1,33 @@
+{
+  "version": "1.0",
+  "patterns": [
+    {
+      "name": "Database-Destructive",
+      "severity": "CRITICAL",
+      "patterns": ["DROP", "DELETE FROM", "TRUNCATE", "ALTER TABLE"],
+      "reason": "Database modifications are irreversible",
+      "approved_actions": ["SELECT", "BACKUP via pg_dump"]
+    },
+    {
+      "name": "Filesystem-Destructive",
+      "severity": "CRITICAL",
+      "patterns": ["rm -rf", "rm -f", "dd if=", "shred"],
+      "reason": "File deletion cannot be undone",
+      "approved_actions": ["ls", "cp", "mv"]
+    },
+    {
+      "name": "Container-Control",
+      "severity": "HIGH",
+      "patterns": ["docker rm", "docker compose down", "docker stop"],
+      "reason": "Stopping containers may interrupt services",
+      "approved_actions": ["docker logs", "docker stats"]
+    },
+    {
+      "name": "System-Control",
+      "severity": "CRITICAL",
+      "patterns": ["systemctl stop", "systemctl disable", "systemctl restart"],
+      "reason": "System service control affects uptime",
+      "approved_actions": ["systemctl status"]
+    }
+  ]
+}

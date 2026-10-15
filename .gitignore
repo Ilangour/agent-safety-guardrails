@@ -1,0 +1,18 @@
+# Safety logs (don't commit real incidents)
+incidents/log.jsonl
+*.log
+
+# Local configs
+settings.json
+.env
+.env.local
+
+# Agent data
+.claude/
+node_modules/
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
