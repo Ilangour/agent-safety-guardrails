@@ -1,0 +1,105 @@
+{
+  "version": "1.0",
+  "patterns": [
+    {
+      "name": "Database-Destructive",
+      "severity": "CRITICAL",
+      "patterns": [
+        "DROP",
+        "DELETE FROM",
+        "TRUNCATE",
+        "ALTER TABLE",
+        "GRANT",
+        "REVOKE"
+      ],
+      "reason": "Database modifications are irreversible. Data loss is permanent.",
+      "approved_actions": [
+        "SELECT",
+        "BACKUP via pg_dump",
+        "Restore via pg_restore"
+      ]
+    },
+    {
+      "name": "Filesystem-Destructive",
+      "severity": "CRITICAL",
+      "patterns": [
+        "rm -rf",
+        "rm -f",
+        "dd if=",
+        "shred",
+        "mv /live",
+        "mv /critical"
+      ],
+      "reason": "File deletion cannot be undone. Data loss is permanent.",
+      "approved_actions": [
+        "ls",
+        "find",
+        "cp (read-only source)",
+        "du"
+      ]
+    },
+    {
+      "name": "Container-Control",
+      "severity": "HIGH",
+      "patterns": [
+        "docker rm",
+        "docker compose down",
+        "docker stop",
+        "docker kill"
+      ],
+      "reason": "Stopping containers interrupts services. Data may be corrupted.",
+      "approved_actions": [
+        "docker logs",
+        "docker stats",
+        "docker ps",
+        "docker inspect"
+      ]
+    },
+    {
+      "name": "System-Control",
+      "severity": "CRITICAL",
+      "patterns": [
+        "systemctl stop",
+        "systemctl disable",
+        "systemctl restart",
+        "systemctl kill"
+      ],
+      "reason": "System service control affects availability and data consistency.",
+      "approved_actions": [
+        "systemctl status",
+        "systemctl list-units"
+      ]
+    },
+    {
+      "name": "Live-Archive-Protection",
+      "severity": "CRITICAL",
+      "patterns": [
+        "/Volumes/HDD6/02-Chaude/immich/",
+        "rm -rf /Volumes/HDD6",
+        "mv /Volumes/HDD6/02-Chaude/immich",
+        "DROP SCHEMA immich",
+        "DELETE FROM asset"
+      ],
+      "reason": "HDD6 immich/ contains live production data. Archive must never be modified.",
+      "approved_actions": [
+        "Read HDD6 data",
+        "Backup HDD6 data",
+        "Analyze HDD6 data"
+      ]
+    },
+    {
+      "name": "Process-Kill",
+      "severity": "HIGH",
+      "patterns": [
+        "kill -9",
+        "killall",
+        "pkill -f"
+      ],
+      "reason": "Force-killing processes can corrupt data and corrupt databases.",
+      "approved_actions": [
+        "kill (graceful)",
+        "ps aux (list processes)"
+      ]
+    }
+  ]
+}
